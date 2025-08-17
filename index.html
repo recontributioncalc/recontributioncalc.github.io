@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Superannuation Recontribution Calculator</title><link href="my-favicon.ico" rel="icon" type="image/x-icon"/>
+<meta content="width=device-width, initial-scale=1, shrink-to-fit=no" name="viewport"/>
+<link crossorigin="anonymous" href="https://stackpath.bootstrapcdn.com/bootstrap/4.1.3/css/bootstrap.min.css" rel="stylesheet"/>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+  svg {
+    background-color: transparent;
+    border: none;
+  }
+  .block { rx: 2; ry: 2; }
+  .zone-label {
+    font-size: 14px;
+    fill: #555;
+    font-weight: bold;
+  }
+  .dotted-line {
+    stroke: #999;
+    stroke-width: 1;
+    stroke-dasharray: 4;
+  }
+  #playBtn { margin-top: 6px; }
+    </style>
+</head>
+<body class="bg-light">
+<div class="container mt-5" style="max-width: 700px; width: 100%;">
+<img alt="Superannuation Calculator Logo" class="img-fluid mx-auto d-block mb-3" src="my-logo.png" style="max-height: 100px;"/>
+<h1 class="text-center mb-4 h2">Super Recontribution Calculator</h1>
+<form onsubmit="return false;"><div class="form-group row align-items-center"><label class="col-sm-6 col-form-label text-sm-left small" for="balance">Current super balance<span data-bs-toggle="tooltip" style="cursor: pointer; margin-left: 5px; color: #555;" title="Your current superannuation balance available for withdrawal.">ⓘ</span></label><div class="col-sm-6 t e x t - r i g h t"><div class="input-group"><div class="input-group-prepend"><span class="input-group-text">$</span></div><input class="form-control" id="balance" inputmode="decimal" type="text"/></div></div></div><div class="form-group row align-items-center"><label class="col-sm-6 col-form-label text-sm-left small" for="taxFree">Tax-free component<span data-bs-toggle="tooltip" style="cursor: pointer; margin-left: 5px; color: #555;" title="The portion of your super balance that is tax-free (e.g. from non-concessional contributions). You can ask for this amount from your super fund, it may not be listed on your statement or online account.">ⓘ</span></label><div class="col-sm-6 t e x t - r i g h t"><div class="input-group"><div class="input-group-prepend"><span class="input-group-text">$</span></div><input class="form-control" id="taxFree" inputmode="decimal" type="text"/></div></div></div><div class="form-group row align-items-center"><label class="col-sm-6 col-form-label text-sm-left small" for="tsb">Total super balance at 30 June<span data-bs-toggle="tooltip" style="cursor: pointer; margin-left: 5px; color: #555;" title="This is your total superannuation balance across all funds as at 30 June of the previous financial year. This must be the total across all your super funds. You should be able to obtain this from your myGov account.">ⓘ</span></label><div class="col-sm-6 text-right"><select class="form-control" id="tsb"><option disabled="True" selected="True" value=""></option><option value="lt176">Less than $1.76 million</option><option value="176to188">$1.76 million to less than $1.88 million</option><option value="188to200">$1.88 million to less than $2 million</option><option value="gte200">$2 million or more</option></select></div></div><div class="form-group row align-items-center"><label class="col-sm-6 col-form-label text-sm-left small" for="recontribution">Recontribution amount<span data-bs-toggle="tooltip" style="cursor: pointer; margin-left: 5px; color: #555;" title="The amount you are planning to withdraw and recontribute.">ⓘ</span></label><div class="col-sm-6 t e x t - r i g h t"><div class="input-group"><div class="input-group-prepend"><span class="input-group-text">$</span></div><input class="form-control" id="recontribution" inputmode="decimal" type="text"/></div></div><div class="col-sm-12 text-right small text-muted mt-1" id="max-recontribution"></div></div><button class="btn btn-primary btn-block mt-3" onclick="calculate()" style="background-color: #b18d15; border-color: #b18d15; color: white;" type="submit">Calculate</button></form>
+<div class="mt-4 text-center" id="results"></div><div class="d-flex justify-content-center mt-3"><canvas class="mt-3" height="180" id="barChart" style="width: 50%; max-width: 400px; height: 180px;"></canvas></div>
+</div>
+<script>
+function resetToPristine() {
+  // Hide chart and destroy any existing chart
+  try {
+    if (window.bar !== undefined) { window.bar.destroy(); window.bar = undefined; }
+  } catch (e) {}// Hide entire animation section (button + viz + caption)
+  var animSec = document.getElementById('animationSection');
+  if (animSec) animSec.style.display = 'none';
+
+  // Also collapse/hide the viz/caption wrapper and clear the SVG
+  var vc = document.getElementById('vizAndCaption');
+  if (vc) vc.style.display = 'none';
+  var svgEl = document.getElementById('legoViz');
+  if (svgEl) { try { d3.select('#legoViz').selectAll('*').remove(); } catch(e){} }
+
+  // Reset animation flags/button
+  try { animationRunning = false; } catch(e) {}
+  var playBtn = document.getElementById('playBtn');
+  if (playBtn) playBtn.disabled = false;
+}
+
+function calculate() {
+  const balanceRaw = document.getElementById("balance").value;
+  const taxFreeRaw = document.getElementById("taxFree").value;
+  const recontributionRaw = document.getElementById("recontribution").value;
+  const balance = parseFloat(stripCommas(balanceRaw));
+  const taxFree = parseFloat(stripCommas(taxFreeRaw));
+  const recontribution = parseFloat(stripCommas(recontributionRaw));
+  const tsbSelection = document.getElementById("tsb").value;
+
+  const resultsDiv = document.getElementById("results");
+  // Always reset visuals to pristine before validating inputs
+  resetToPristine();
+  const ctx = document.getElementById('barChart').getContext('2d');
+  d3.select("#legoViz").selectAll("*").remove();
+  // Hide animation SVG+caption on each calculation
+  var vc = document.getElementById('vizAndCaption');
+  if (vc) { vc.style.display = 'none'; }
+  var playBtn = document.getElementById('playBtn');
+  if (playBtn) { playBtn.disabled = false; }
+
+
+  if (window.bar !== undefined) {
+    window.bar.destroy();
+  }
+
+  if (!(tsbSelection && String(balanceRaw).trim() !== "" && String(taxFreeRaw).trim() !== "" && String(recontributionRaw).trim() !== "")) {
+    resultsDiv.innerHTML = "<div class='alert alert-danger'>Please complete all fields.</div>";
+    return;
+  }
+
+  if (isNaN(balance) || isNaN(taxFree) || isNaN(recontribution)) {
+    resultsDiv.innerHTML = "<div class='alert alert-danger'>Please fill in all fields with valid numbers.</div>";
+    return;
+  }
+
+  if (balance <= 0) {
+    resultsDiv.innerHTML = "<div class='alert alert-danger'>Current super balance must be greater than $0.</div>";
+    return;
+  }
+
+  if (recontribution <= 0) {
+    resultsDiv.innerHTML = "<div class='alert alert-danger'>Recontribution amount must be greater than $0.</div>";
+    return;
+  }
+
+  if (taxFree < 0) {
+    resultsDiv.innerHTML = "<div class='alert alert-danger'>Tax-free component must be greater than or equal to $0.</div>";
+    return;
+  }
+
+  if (taxFree > balance) {
+    resultsDiv.innerHTML = "<div class='alert alert-danger'>Tax-free component can't exceed total balance.</div>";
+    return;
+  }
+
+  let maxWithdrawal;
+  if (tsbSelection === "lt176") maxWithdrawal = 360000;
+  else if (tsbSelection === "176to188") maxWithdrawal = 240000;
+  else if (tsbSelection === "188to200") maxWithdrawal = 120000;
+  else maxWithdrawal = 0;
+
+if (recontribution > balance) {
+    resultsDiv.innerHTML = "<div class='alert alert-danger'>Recontribution can't exceed the current balance.</div>";
+    return;
+  }
+
+if (recontribution > maxWithdrawal) {
+    resultsDiv.innerHTML = "<div class='alert alert-danger'>Max recontribution for this TSB is $" + maxWithdrawal.toLocaleString() + ".</div>";
+    return;
+  }
+
+  const taxFreeRatio = taxFree / balance;
+  const taxableRatio = 1 - taxFreeRatio;
+  const taxFreeWithdrawn = recontribution * taxFreeRatio;
+  const taxableWithdrawn = recontribution * taxableRatio;
+
+  const newTaxFree = taxFree - taxFreeWithdrawn + recontribution;
+  const reductionTaxable = taxableWithdrawn;
+  const taxSavings = taxableWithdrawn * 0.17;
+
+
+
+  resultsDiv.innerHTML = `
+    <div class="text-left" style="font-size: 1em; font-weight: normal;">
+      <p>This recontribution would increase your tax-free component to <strong>$${newTaxFree.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</strong>, and reduce your taxable component by <strong>$${reductionTaxable.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</strong>.</p>
+      <p>If the full balance were paid to a non-tax dependant beneficiary, the reduction in the taxable component could result in tax savings of approximately <strong>$${taxSavings.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</strong> (see full list of assumptions below).</p>
+      <div style="margin-bottom: 1em;"></div>
+    </div>
+`;
+
+  document.getElementById("animationSection").style.display = "block";
+
+  window.bar = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: ['Before', 'After'],
+      datasets: [
+        {
+          label: 'Tax-Free',
+          data: [taxFree, newTaxFree],
+          backgroundColor: '#9b740c',
+          stack: 'stack1'
+        },
+        {
+          label: 'Taxable',
+          data: [balance - taxFree, balance - recontribution - (taxFree - taxFreeWithdrawn)],
+          backgroundColor: '#e9dbb5',
+          stack: 'stack1'
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: {
+          position: 'bottom'
+        }
+      },
+      scales: {
+        x: {
+          stacked: true,
+          grid: { display: false }
+        },
+        y: {
+          stacked: true,
+          grid: { display: false },
+          ticks: {
+            callback: function(value) {
+              return '$' + value.toLocaleString();
+            },
+            maxTicksLimit: 8,
+            
+          }
+        }
+      }
+    }
+  });
+}
+</script>
+<script>
+function formatNumberWithCommas(value) {
+  const parts = value.toString().split(".");
+  parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return parts.join(".");
+}
+
+function stripCommas(value) {
+  return value.replace(/,/g, "");
+}
+
+function setupCurrencyFormatting(id) {
+  const input = document.getElementById(id);
+
+  input.addEventListener("blur", () => {
+    let raw = stripCommas(input.value);
+    if (!isNaN(raw) && raw !== "") {
+      input.value = formatNumberWithCommas(raw);
+    }
+  });
+
+  input.addEventListener("focus", () => {
+    input.value = stripCommas(input.value);
+  });
+}
+
+document.addEventListener("DOMContentLoaded", function () {
+  ["balance", "taxFree", "tsb", "recontribution"].forEach(setupCurrencyFormatting);
+});
+</script><script>
+function updateMaxRecontribution() {
+  const balanceRaw = document.getElementById("balance").value;
+  const tsbSelection = document.getElementById("tsb").value;
+  const display = document.getElementById("max-recontribution");
+
+  const balance = parseFloat(stripCommas(balanceRaw));
+  let maxAllowed;
+
+  if (!tsbSelection || isNaN(balance) || balance <= 0) {
+    display.innerText = "";
+    return;
+  }
+
+  if (tsbSelection === "lt176") maxAllowed = 360000;
+  else if (tsbSelection === "176to188") maxAllowed = 240000;
+  else if (tsbSelection === "188to200") maxAllowed = 120000;
+  else maxAllowed = 0;
+
+  const maxRecontribution = Math.min(balance, maxAllowed);
+  display.innerText = `(Maximum: $${maxRecontribution.toLocaleString()})`;
+}
+</script><script>
+document.addEventListener("DOMContentLoaded", function () {
+  document.getElementById("balance").addEventListener("input", updateMaxRecontribution);
+  document.getElementById("tsb").addEventListener("change", updateMaxRecontribution);
+});
+</script>
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'))
+  tooltipTriggerList.forEach(function (tooltipTriggerEl) {
+    new bootstrap.Tooltip(tooltipTriggerEl)
+  })
+});
+</script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<div class="container" id="animationSection" style="display:none;">
+<div class="mt-4" id="animationContainer">
+<div class="d-flex flex-column align-items-center">
+<div class="text-center mb-1" style="width: 600px;">
+<button id="playBtn" onclick="runAnimation()" style="font-size: 12px; padding: 3px 8px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">Animate</button>
+</div>
+<div id="vizAndCaption" style="display:none;">
+<svg height="290" id="legoViz" width="600"></svg>
+<div class="text-center" style="font-size: 13px; color: #555; width:100%; max-width:600px; margin: 16px auto 0 auto; text-align: center;">This animation illustrates the recontribution amount being withdrawn proportionally from the taxable and tax-free components, then re-added to the same account as tax-free. Each block represents 1% of the total balance. The blocks show the money moving outside of super (to a regular bank account), and being recontributed back in as a non-concessional contribution.</div>
+</div>
+</div>
+</div>
+<div class="container mt-5" style="max-width: 700px;"><div class="card p-4" style="font-size: 0.85rem;">
+<h5 style="text-align: center;">How it works</h5><p>The recontribution strategy is a financial planning tool, most often used in estate planning to increase the proportion of the “tax-free” component in your superannuation. It generally provides no benefit during your lifetime; its sole purpose is to reduce the tax paid by non-tax-dependent beneficiaries (usually adult children) if they inherit your super. It is typically undertaken in the “sweet spot” age range where you are eligible to both withdraw money from super and make additional contributions.</p><p>In practice, it involves withdrawing a lump sum from your super (made up of taxable and tax-free components in the same proportions as your account), then recontributing that amount as a non-concessional (after-tax) contribution, which is added entirely to the tax-free component. This does not change your total balance but usually shifts the proportions, reducing the taxable component and increasing the tax-free component.</p><p>Because this is an advanced strategy and a fairly abstract concept, I’ve often found it challenging to explain clearly in conversation, and good visual examples are rare. This calculator was created to fill that gap and provide a clear, visual way to show exactly what happens inside a super account when a recontribution strategy is implemented.</p>
+<h5 style="text-align: center;">Assumptions</h5><p>This calculator uses FY 2025–26 rules for contribution caps, total super balance thresholds, and tax rates. I will aim to update it if and when superannuation rules change. It assumes you are aged 60 or over but under 75, can withdraw tax-free from super and recontribute back into super, and complete both steps in the same financial year into the same account.</p><p>It also includes a safeguard to prevent non-concessional contributions being made that exceed the maximum allowed under both the NCC cap and the bring-forward rule, based on the total super balance at 30 June of the previous financial year (note: the NCC cap is nil for a TSB above $2 million).</p>
+<h5 style="text-align: center;">Disclaimer</h5><p>This calculator is for educational purposes only and should not be considered as financial, tax, or other professional advice. Results are based on the information entered, the assumptions outlined above, and legislation current at the time of creation. This calculator does not take into account your personal objectives, financial situation, or needs. While care has been taken to ensure accuracy, no warranty is given and no responsibility is accepted for any loss, damage, or reliance arising from its use. There are risks to implementing a recontribution strategy, including the need to meet eligibility criteria to both withdraw from and contribute back to super.</p><p>Using your contribution caps and/or the bring-forward rule in this way may limit your ability to make additional contributions in the future. This may be appropriate if you are certain you will not need to contribute more, but could be detrimental if your circumstances change. Before acting on any financial strategy, seek personalised advice from a licensed financial adviser, accountant, or tax agent. Attempting to implement financial strategies yourself and getting it wrong can be far more costly than obtaining appropriate professional advice from the outset.</p>
+</div></div>
+</div>
+</body>
+</html>
+<script>
+let animationRunning = false;
+
+function runAnimation() {
+  animationRunning = false;
+  const vc = document.getElementById('vizAndCaption');
+  if (vc && vc.style.display === 'none') { vc.style.display = 'block'; }
+  if (animationRunning) return;
+  animationRunning = true;
+  document.getElementById("playBtn").disabled = true;
+  const svg = d3.select("#legoViz");
+  svg.selectAll("*").remove();
+
+  const cols = 20, rows = 5, totalBlocks = cols * rows;
+  const blockSize = 20, gap = 2;
+  const leftMargin = 140, startX = leftMargin, startY = 20;
+
+  const total = parseFloat(stripCommas(document.getElementById("balance").value)) || 1;
+  const taxFree = parseFloat(stripCommas(document.getElementById("taxFree").value)) || 0;
+  const recontribution = parseFloat(stripCommas(document.getElementById("recontribution").value)) || 0;
+
+  const taxFreePercent = taxFree / total;
+  const recontributionPercent = recontribution / total;
+  const withdrawnTaxFreePercent = recontributionPercent * taxFreePercent;
+  const withdrawnTaxablePercent = recontributionPercent - withdrawnTaxFreePercent;
+
+  const taxFreeBlocks = Math.round(taxFreePercent * totalBlocks);
+  const withdrawnTaxFreeBlocks = Math.round(withdrawnTaxFreePercent * totalBlocks);
+  const withdrawnTaxableBlocks = Math.round(withdrawnTaxablePercent * totalBlocks);
+  const recontributionBlocks = withdrawnTaxFreeBlocks + withdrawnTaxableBlocks;
+
+  let data = Array.from({ length: totalBlocks }, (_, i) => ({
+    id: i,
+    type: i < taxFreeBlocks ? 'taxFree' : 'taxable',
+    withdrawn: false,
+    x: i % cols,
+    y: Math.floor(i / cols)
+  }));
+
+  const withdrawn = [];
+  let tfCount = 0, txCount = 0;
+  for (let block of data) {
+    if (withdrawn.length >= recontributionBlocks) break;
+    if (block.type === 'taxFree' && tfCount < withdrawnTaxFreeBlocks) {
+      withdrawn.push(block); block.withdrawn = true; tfCount++;
+    } else if (block.type === 'taxable' && txCount < withdrawnTaxableBlocks) {
+      withdrawn.push(block); block.withdrawn = true; txCount++;
+    }
+  }
+
+  svg.selectAll(".block")
+    .data(data)
+    .enter().append("rect")
+    .attr("class", "block")
+    .attr("id", d => `block-${d.id}`)
+    .attr("x", d => startX + d.x * (blockSize + gap))
+    .attr("y", d => startY + d.y * (blockSize + gap))
+    .attr("width", blockSize)
+    .attr("height", blockSize)
+    .attr("fill", d => d.type === 'taxFree' ? '#9b740c' : '#e9dbb5');
+
+  svg.append("text")
+    .attr("class", "zone-label")
+    .attr("x", 20)
+    .attr("y", startY + rows * (blockSize + gap) / 2)
+    .text("Inside super");
+
+  svg.append("text")
+    .attr("class", "zone-label")
+    .attr("x", 20)
+    .attr("y", startY + 6.5 * (blockSize + gap) + rows * (blockSize + gap) / 2 + 3)
+    .text("Outside super");
+
+  svg.append("line")
+    .attr("class", "dotted-line")
+    .attr("x1", 0).attr("x2", 600)
+    .attr("y1", startY + 5 * (blockSize + gap) + 15)
+    .attr("y2", startY + 5 * (blockSize + gap) + 15);
+
+  setTimeout(() => {
+    animationRunning = false;
+    document.getElementById("playBtn").disabled = false;
+    withdrawn.forEach(block => {
+      d3.select(`#block-${block.id}`)
+        .transition().duration(1200).ease(d3.easeCubicInOut)
+        .attr("y", startY + 6.5 * (blockSize + gap) + block.y * (blockSize + gap));
+    });
+  }, 2000);
+
+  setTimeout(() => {
+    withdrawn.forEach(block => {
+      d3.select(`#block-${block.id}`)
+        .transition().duration(1000).ease(d3.easeCubicInOut)
+        .attr("fill", "#9b740c");
+    });
+  }, 3500);
+
+  setTimeout(() => {
+    withdrawn.forEach(block => {
+      d3.select(`#block-${block.id}`)
+        .transition().duration(1200).ease(d3.easeCubicInOut)
+        .attr("y", startY + block.y * (blockSize + gap));
+    });
+  }, 4500);
+}
+</script>
